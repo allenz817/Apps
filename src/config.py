@@ -1,7 +1,7 @@
 # Configuration settings for the financial statement OCR application
 
 # Input/Output paths
-IMAGE_INPUT_PATH = 'resources/sample_images/sample_financial_statement.jpg'
+IMAGE_INPUT_PATH = 'resources/sample_images/sample_financial_statement.png'
 EXCEL_OUTPUT_PATH = 'output/financial_data.xlsx'
 
 # OCR settings
