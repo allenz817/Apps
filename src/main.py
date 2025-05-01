@@ -4,7 +4,7 @@ from image_processing.image_loader import load_image
 from image_processing.preprocessing import enhance_image
 from ocr.text_recognition import extract_text
 from ocr.table_detection import detect_tables
-from data_processing.table_parser import parse_table, convert_to_dataframe
+from data_processing.table_parser import parse_table
 from data_processing.data_cleaner import clean_data
 from export.excel_exporter import export_to_excel
 import config

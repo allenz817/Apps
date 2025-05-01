@@ -1,102 +1,122 @@
 import cv2
 import numpy as np
 from PIL import Image
-
-def detect_table_structure(image):
-    import cv2
-    import numpy as np
-
-    # Convert the image to grayscale
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-    # Apply thresholding to get a binary image
-    _, binary = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
-
-    # Use morphological operations to detect lines
-    kernel = np.ones((3, 3), np.uint8)
-    dilated = cv2.dilate(binary, kernel, iterations=2)
-
-    # Find contours of the detected lines
-    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    table_structure = []
-
-    for contour in contours:
-        # Get the bounding box for each contour
-        x, y, w, h = cv2.boundingRect(contour)
-        table_structure.append((x, y, w, h))
-
-    return table_structure
-
-def extract_tables_from_image(image_path):
-    import cv2
-
-    # Load the image
-    image = cv2.imread(image_path)
-
-    # Detect table structures
-    table_structure = detect_table_structure(image)
-
-    return table_structure
+import pytesseract
+from collections import defaultdict
 
 def detect_tables(image):
     """
-    Detect tables in an image and structure them into rows and columns.
+    Enhanced table detection that captures full table structure including all columns
     
     Args:
         image (PIL.Image): The input image
         
     Returns:
-        list: A list of detected tables, each as a dictionary with 'rows' and 'columns'
+        list: A list of detected tables
     """
     # Convert PIL Image to OpenCV format if necessary
     if isinstance(image, Image.Image):
-        import numpy as np
         opencv_image = np.array(image.convert('RGB'))
         opencv_image = opencv_image[:, :, ::-1].copy()  # RGB to BGR
     else:
         opencv_image = image
     
-    # Get the table structure
-    table_cells = detect_table_structure(opencv_image)
+    # Use enhanced detection to capture the complete table grid
+    # Detect horizontal and vertical lines for better grid structure
+    gray = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2GRAY)
     
-    # Group cells into tables
-    tables = []
-    if table_cells:
-        # Sort cells by y-coordinate
-        sorted_cells = sorted(table_cells, key=lambda cell: cell[1])
+    # Apply adaptive thresholding to handle varying lighting conditions
+    binary = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 15, 10
+    )
+    
+    # Create separate kernels for horizontal and vertical lines
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 1))
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 25))
+    
+    # Detect horizontal and vertical lines
+    horizontal_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
+    vertical_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, vertical_kernel, iterations=2)
+    
+    # Combine horizontal and vertical lines to create a grid
+    table_grid = cv2.bitwise_or(horizontal_lines, vertical_lines)
+    
+    # Detect grid structure - find contours of cells
+    contours, _ = cv2.findContours(table_grid, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Filter contours by size to find actual cells
+    min_cell_area = 100  # Minimum area to be considered a cell
+    cells = []
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if w * h > min_cell_area:
+            cells.append((x, y, w, h))
+    
+    # Sort cells by y-coordinate first, then x-coordinate to organize into rows and columns
+    sorted_cells = sorted(cells, key=lambda cell: (cell[1], cell[0]))
+    
+    # Group cells into rows based on y-coordinate
+    rows = []
+    current_row = []
+    current_y = None
+    y_tolerance = 15  # Pixels of tolerance for row grouping
+    
+    for cell in sorted_cells:
+        x, y, w, h = cell
         
-        # Basic heuristic to identify row boundaries
-        rows = []
-        current_row = [sorted_cells[0]]
-        current_y = sorted_cells[0][1]
-        
-        for cell in sorted_cells[1:]:
-            # If cell is close to the current row's y-coordinate, add to current row
-            if abs(cell[1] - current_y) < 20:  # Threshold for considering cells in the same row
-                current_row.append(cell)
-            else:
-                # Otherwise, start a new row
-                rows.append(current_row)
-                current_row = [cell]
-                current_y = cell[1]
-        
-        # Add the last row
-        if current_row:
+        if current_y is None:
+            current_y = y
+            current_row.append(cell)
+        elif abs(y - current_y) <= y_tolerance:
+            current_row.append(cell)
+        else:
+            # Sort cells in the current row by x-coordinate
+            current_row = sorted(current_row, key=lambda c: c[0])
             rows.append(current_row)
-        
-        # Now find columns by sorting cells in each row by x-coordinate
-        structured_rows = []
-        for row in rows:
-            sorted_row = sorted(row, key=lambda cell: cell[0])
-            structured_rows.append(sorted_row)
-        
-        # Create a table dictionary
-        table = {
-            'rows': structured_rows,
-            'columns': []  # To be computed in a more sophisticated implementation
-        }
-        
-        tables.append(table)
+            current_row = [cell]
+            current_y = y
     
-    return tables
+    # Add the last row
+    if current_row:
+        current_row = sorted(current_row, key=lambda c: c[0])
+        rows.append(current_row)
+    
+    # If no cells detected through line detection, try text-based approach
+    if not rows:
+        text_table = detect_table_from_text(image)
+        if text_table:
+            return [{'rows': text_table, 'original_image': opencv_image}]
+        return []
+    
+    # Return the detected table with the original image for text extraction
+    return [{'rows': rows, 'original_image': opencv_image}]
+
+# Add helper functions for text-based detection
+def detect_table_from_text(image):
+    """Detect table structure based on text alignment when no grid lines are visible"""
+    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+    
+    # Group words by line (y-coordinate)
+    lines = defaultdict(list)
+    for i in range(len(data['text'])):
+        if data['text'][i].strip():
+            y = data['top'][i]
+            lines[y].append({
+                'text': data['text'][i],
+                'x': data['left'][i],
+                'y': data['top'][i],
+                'w': data['width'][i],
+                'h': data['height'][i]
+            })
+    
+    # Format lines into rows of cells
+    rows = []
+    for y in sorted(lines.keys()):
+        # Sort words in line by x-coordinate
+        line = sorted(lines[y], key=lambda word: word['x'])
+        
+        # Create cell-like structures from words
+        row = [(word['x'], word['y'], word['w'], word['h']) for word in line]
+        rows.append(row)
+    
+    return rows
